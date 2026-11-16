@@ -90,6 +90,9 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
 
 // ===== CONFIG: change these values =====
 const CONFIG = {
@@ -113,7 +116,10 @@ const CONFIG = {
   layerLabelType: 'h5',                                // layer titles
   itemLabelType:  { size: 'sm', weight: 'medium' },   // shape names
   textWorldScale: 0.018, // how big 1px of type is in the 3D scene
-  autoRotateSpeed: 0.5   // 0 = no auto rotation
+  autoRotateSpeed: 0.5,  // 0 = no auto rotation
+  animDuration: 0.45,    // seconds for layers to move and fade when shown/hidden
+  edgeWidth: 1,          // shape edge thickness in px
+  hoverEdgeWidth: 2.5    // shape edge thickness in px on hover
 };
 
 // ===== DATA: layers bottom -> top. status: 'active' or 'planned' =====
@@ -177,21 +183,27 @@ const HALF = {
   cylinder: CONFIG.objectSize * 0.65
 };
 
+// Every material remembers its normal opacity, so layers can fade in and out
+function fadeable(mat, opacity) { mat.transparent = true; mat.opacity = opacity; mat.userData.base = opacity; return mat; }
+
+const edgeMaterials = []; // fat-line materials need the screen size
 function makeShape(shape, planned) {
-  const color = CONFIG.ink;
   const s = CONFIG.objectSize;
   let geo;
   if (shape === 'cube') geo = new THREE.BoxGeometry(s, s, s);
   else if (shape === 'pyramid') { geo = new THREE.ConeGeometry(s * 0.75, s * 1.2, 4); geo.rotateY(Math.PI / 4); }
   else geo = new THREE.CylinderGeometry(s * 0.4, s * 0.4, s * 1.3, 32);
   const group = new THREE.Group();
-  group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-    color, transparent: true, opacity: planned ? CONFIG.shapeOpacity * 0.4 : CONFIG.shapeOpacity,
-    depthWrite: false, side: THREE.DoubleSide
-  })));
-  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 20),
-    new THREE.LineBasicMaterial({ color, transparent: true, opacity: planned ? CONFIG.plannedOpacity : CONFIG.edgeOpacity })));
-  return group;
+  const face = new THREE.Mesh(geo, fadeable(new THREE.MeshBasicMaterial({
+    color: CONFIG.ink, depthWrite: false, side: THREE.DoubleSide
+  }), planned ? CONFIG.shapeOpacity * 0.4 : CONFIG.shapeOpacity));
+  group.add(face);
+  const edgeMat = fadeable(new LineMaterial({ color: CONFIG.ink, linewidth: CONFIG.edgeWidth }),
+    planned ? CONFIG.plannedOpacity : CONFIG.edgeOpacity);
+  edgeMaterials.push(edgeMat);
+  const edges = new LineSegments2(new LineSegmentsGeometry().fromEdgesGeometry(new THREE.EdgesGeometry(geo, 20)), edgeMat);
+  group.add(edges);
+  return { group, face, edgeMat };
 }
 
 // Read type tokens from the CSS above, so HTML and 3D share one scale
@@ -221,7 +233,7 @@ function textSprite(text, type, align, opacity) {
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity, depthTest: false }));
+  const sprite = new THREE.Sprite(fadeable(new THREE.SpriteMaterial({ map: tex, depthTest: false }), opacity));
   const k = CONFIG.textWorldScale / TEXT_RES;
   sprite.scale.set(c.width * k, c.height * k, 1);
   if (align === 'right') sprite.center.set(1, 0.5);
@@ -229,86 +241,99 @@ function textSprite(text, type, align, opacity) {
   return sprite;
 }
 
+// ===== BUILD THE LAYERS =====
+// Each layer is a group that can move up/down and fade. Positions inside a layer are local (y = 0 is the plane).
 const nodes = {};
-const layerLabels = [];
-const layerGroups = []; // everything that belongs to one layer, so it can be hidden together
+const layerGroups = [];
+const shapes = []; // everything you can hover or click
 LAYERS.forEach((layer, li) => {
-  const y = li * CONFIG.layerGap;
   const group = new THREE.Group();
+  group.position.y = li * CONFIG.layerGap;
+  group.userData = { alpha: 1, targetAlpha: 1, targetY: group.position.y };
   scene.add(group);
   layerGroups.push(group);
 
   const planeGeo = new THREE.PlaneGeometry(CONFIG.layerSize, CONFIG.layerSize);
   planeGeo.rotateX(-Math.PI / 2);
-  const plane = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({
-    color: CONFIG.ink, transparent: true, opacity: CONFIG.layerOpacity, side: THREE.DoubleSide, depthWrite: false
-  }));
-  plane.position.y = y;
-  group.add(plane);
-
-  const outline = new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),
-    new THREE.LineBasicMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.outlineOpacity }));
-  outline.position.y = y;
-  group.add(outline);
+  group.add(new THREE.Mesh(planeGeo, fadeable(new THREE.MeshBasicMaterial({
+    color: CONFIG.ink, side: THREE.DoubleSide, depthWrite: false }), CONFIG.layerOpacity)));
+  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),
+    fadeable(new THREE.LineBasicMaterial({ color: CONFIG.ink }), CONFIG.outlineOpacity)));
 
   const label = textSprite(layer.name, CONFIG.layerLabelType, 'right', CONFIG.layerLabelOpacity);
-  label.userData.y = y;
   group.add(label);
-  layerLabels.push(label);
+  group.userData.label = label;
 
   const n = layer.items.length;
   layer.items.forEach((item, ii) => {
     const angle = (ii / n) * Math.PI * 2 + li * 0.6;
     const r = n === 1 ? 0 : CONFIG.layerSize * 0.3;
     const planned = item.status === 'planned';
-    const pos = new THREE.Vector3(Math.cos(angle) * r, y + CONFIG.objectSize * 0.6, Math.sin(angle) * r);
+    const pos = new THREE.Vector3(Math.cos(angle) * r, CONFIG.objectSize * 0.6, Math.sin(angle) * r);
     const shape = makeShape(layer.shape, planned);
-    shape.position.copy(pos);
-    group.add(shape);
+    shape.group.position.copy(pos);
+    group.add(shape.group);
 
     const tag = textSprite(item.name + (planned ? ' (planned)' : ''), CONFIG.itemLabelType, 'center',
       planned ? CONFIG.itemLabelOpacity * 0.6 : CONFIG.itemLabelOpacity);
     tag.position.copy(pos).add(new THREE.Vector3(0, HALF[layer.shape] + 0.3, 0));
     group.add(tag);
 
+    shape.face.userData.shape = { item, layer, layerIndex: li, edgeMat: shape.edgeMat, tag };
+    shapes.push(shape.face);
     nodes[item.id] = { pos, half: HALF[layer.shape], layer: li };
   });
 });
 
-// Curved links: vertical where they meet each shape, smooth S-curve between
+// ===== LINKS: vertical where they meet each shape, smooth S-curve between =====
 const linkLines = [];
 LINKS.forEach(([a, b, planned]) => {
-  let A = nodes[a], B = nodes[b];
-  if (!A || !B) return;
-  if (A.pos.y > B.pos.y) [A, B] = [B, A];
-  const start = A.pos.clone().add(new THREE.Vector3(0, A.half, 0));
-  const end   = B.pos.clone().sub(new THREE.Vector3(0, B.half, 0));
-  const k = (end.y - start.y) * CONFIG.linkCurve;
-  const curve = new THREE.CubicBezierCurve3(
-    start, start.clone().add(new THREE.Vector3(0, k, 0)),
-    end.clone().sub(new THREE.Vector3(0, k, 0)), end);
-  const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(CONFIG.linkSegments));
+  if (!nodes[a] || !nodes[b]) return;
   const mat = planned
-    ? new THREE.LineDashedMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.linkOpacity, dashSize: 0.15, gapSize: 0.12 })
-    : new THREE.LineBasicMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.linkOpacity });
-  const line = new THREE.Line(geo, mat);
-  if (planned) line.computeLineDistances();
-  line.userData.layers = [A.layer, B.layer];
+    ? new THREE.LineDashedMaterial({ color: CONFIG.ink, dashSize: 0.15, gapSize: 0.12 })
+    : new THREE.LineBasicMaterial({ color: CONFIG.ink });
+  fadeable(mat, CONFIG.linkOpacity);
+  const line = new THREE.Line(new THREE.BufferGeometry(), mat);
+  line.userData = { a: nodes[a], b: nodes[b], planned };
   scene.add(line);
   linkLines.push(line);
 });
+
+const _s = new THREE.Vector3(), _e = new THREE.Vector3();
+function worldPos(node, out) { return out.copy(node.pos).setY(node.pos.y + layerGroups[node.layer].position.y); }
+function updateLinks() {
+  linkLines.forEach(line => {
+    let { a: A, b: B, planned } = line.userData;
+    if (worldPos(A, _s).y > worldPos(B, _e).y) [A, B] = [B, A];
+    const start = worldPos(A, new THREE.Vector3()).add(new THREE.Vector3(0, A.half, 0));
+    const end   = worldPos(B, new THREE.Vector3()).sub(new THREE.Vector3(0, B.half, 0));
+    const k = (end.y - start.y) * CONFIG.linkCurve;
+    const curve = new THREE.CubicBezierCurve3(start, start.clone().add(new THREE.Vector3(0, k, 0)),
+      end.clone().sub(new THREE.Vector3(0, k, 0)), end);
+    line.geometry.setFromPoints(curve.getPoints(CONFIG.linkSegments));
+    if (planned) line.computeLineDistances();
+  });
+}
 
 // ===== LAYER SWITCHER (side panel) =====
 const STORAGE_KEY = 'ngui.hiddenLayers';
 let hidden = new Set();
 try { hidden = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')); } catch (e) {}
 
+// Visible layers stack with no gaps. A hidden layer fades out where the gap closes.
 function applyVisibility() {
-  LAYERS.forEach((layer, li) => { layerGroups[li].visible = !hidden.has(layer.name); });
-  // A link shows only when both of its ends are visible
-  linkLines.forEach(l => { l.visible = l.userData.layers.every(li => layerGroups[li].visible); });
+  let slot = 0;
+  LAYERS.forEach((layer, li) => {
+    const d = layerGroups[li].userData;
+    const isVisible = !hidden.has(layer.name);
+    d.targetAlpha = isVisible ? 1 : 0;
+    d.targetY = Math.max(slot - (isVisible ? 0 : 0.5), 0) * CONFIG.layerGap;
+    if (isVisible) slot++;
+  });
+  stackHeight = Math.max(slot - 1, 0) * CONFIG.layerGap;
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...hidden])); } catch (e) {}
 }
+let stackHeight = 0;
 
 const list = document.getElementById('layer-list');
 [...LAYERS].reverse().forEach(layer => { // top layer first, same order as in 3D
@@ -326,7 +351,49 @@ const list = document.getElementById('layer-list');
   list.appendChild(row);
 });
 applyVisibility();
+// Start already in place (no animation on page load)
+layerGroups.forEach(g => { g.position.y = g.userData.targetY; g.userData.alpha = g.userData.targetAlpha; });
+controls.target.y = stackHeight / 2;
+camera.position.y += stackHeight / 2 - CONFIG.layerGap * 1.5;
 
+// ===== HOVER AND CLICK ON SHAPES =====
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let hovered = null;    // the shape under the mouse
+let pointerIn = false;
+renderer.domElement.addEventListener('pointermove', e => {
+  pointer.set(e.clientX / innerWidth * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  pointerIn = true;
+});
+renderer.domElement.addEventListener('pointerleave', () => { pointerIn = false; });
+
+function updateHover() {
+  let hit = null;
+  if (pointerIn) {
+    raycaster.setFromCamera(pointer, camera);
+    const targets = shapes.filter(f => layerGroups[f.userData.shape.layerIndex].userData.targetAlpha > 0);
+    const hits = raycaster.intersectObjects(targets, false);
+    hit = hits.length ? hits[0].object : null;
+  }
+  if (hit === hovered) return;
+  hovered = hit;
+  renderer.domElement.style.cursor = hovered ? 'pointer' : '';
+  controls.autoRotate = !hovered && CONFIG.autoRotateSpeed > 0; // hold still while pointing at a shape
+}
+
+// Click-through: every shape click lands here. Add actions per item later (open Notion page, Miro board...).
+function onShapeClick(info) {
+  window.dispatchEvent(new CustomEvent('shape-click', { detail: { id: info.item.id, name: info.item.name, layer: info.layer.name } }));
+}
+let downAt = null;
+renderer.domElement.addEventListener('pointerdown', e => { downAt = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', e => {
+  // Only a click, not the end of a drag-to-rotate
+  if (downAt && Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) < 5 && hovered) onShapeClick(hovered.userData.shape);
+  downAt = null;
+});
+
+// ===== EACH FRAME =====
 // Layer titles stay on the screen-left side of the column
 const right = new THREE.Vector3();
 function placeLayerLabels() {
@@ -335,7 +402,43 @@ function placeLayerLabels() {
   // Start just past the edge of the layer plane as seen from the camera, then add the gap
   const edge = CONFIG.layerSize / 2 * (Math.abs(right.x) + Math.abs(right.z));
   const dist = edge + CONFIG.labelOffset;
-  layerLabels.forEach(l => l.position.set(-right.x * dist, l.userData.y + CONFIG.objectSize * 0.6, -right.z * dist));
+  layerGroups.forEach(g => g.userData.label.position.set(-right.x * dist, CONFIG.objectSize * 0.6, -right.z * dist));
+}
+
+// Smoothly move layers, fade them, and keep the camera on the middle of the stack
+const ease = (from, to, k) => from + (to - from) * k;
+function updateLayers(dt) {
+  const k = 1 - Math.exp(-dt * 6 / CONFIG.animDuration); // ~done within animDuration
+  let moving = false;
+  layerGroups.forEach(g => {
+    const d = g.userData;
+    if (Math.abs(g.position.y - d.targetY) > 1e-4 || Math.abs(d.alpha - d.targetAlpha) > 1e-3) moving = true;
+    g.position.y = ease(g.position.y, d.targetY, k);
+    d.alpha = ease(d.alpha, d.targetAlpha, k);
+    g.visible = d.alpha > 0.01;
+  });
+  const dy = ease(controls.target.y, stackHeight / 2, k) - controls.target.y;
+  controls.target.y += dy; camera.position.y += dy;
+  return moving;
+}
+
+// Opacity = normal opacity x layer fade. Hovered shape: solid, bolder edges and a solid name.
+function updateOpacity() {
+  layerGroups.forEach(g => {
+    const a = g.userData.alpha;
+    g.traverse(o => { if (o.material) o.material.opacity = o.material.userData.base * a; });
+  });
+  if (hovered) {
+    const { edgeMat, tag, layerIndex } = hovered.userData.shape;
+    const a = layerGroups[layerIndex].userData.alpha;
+    edgeMat.opacity = a; tag.material.opacity = a;
+  }
+  edgeMaterials.forEach(m => { m.linewidth = hovered && m === hovered.userData.shape.edgeMat ? CONFIG.hoverEdgeWidth : CONFIG.edgeWidth; });
+  linkLines.forEach(l => {
+    const a = Math.min(layerGroups[l.userData.a.layer].userData.alpha, layerGroups[l.userData.b.layer].userData.alpha);
+    l.material.opacity = l.material.userData.base * a;
+    l.visible = a > 0.01;
+  });
 }
 
 // Keep the 3D structure centred in the space to the right of the panel
@@ -345,14 +448,21 @@ function fitView() {
   camera.setViewOffset(innerWidth, innerHeight, -panelW / 2, 0, innerWidth, innerHeight);
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
+  edgeMaterials.forEach(m => m.resolution.set(innerWidth, innerHeight));
 }
 addEventListener('resize', fitView);
 fitView();
 
+updateLinks();
+const clock = new THREE.Clock();
 function animate() {
   requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.1);
+  if (updateLayers(dt)) updateLinks();
   controls.update();
   placeLayerLabels();
+  updateHover();
+  updateOpacity();
   renderer.render(scene, camera);
 }
 animate();
