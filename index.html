@@ -85,7 +85,7 @@ const CONFIG = {
   objectSize: 0.6,       // size of each shape
   linkCurve: 0.55,       // 0 = straight, higher = longer vertical ends
   linkSegments: 48,      // smoothness of each curve
-  labelOffset: 0.2,      // gap between the column and the layer titles
+  labelOffset: 0.5,      // gap between the edge of the layers and the layer titles
   // 3D labels use the typography above: a heading ('h1'..'h6') or { size: 'xs'..'9xl', weight }
   layerLabelType: 'h5',                                // layer titles
   itemLabelType:  { size: 'sm', weight: 'medium' },   // shape names
@@ -273,7 +273,9 @@ const right = new THREE.Vector3();
 function placeLayerLabels() {
   right.setFromMatrixColumn(camera.matrixWorld, 0);
   right.y = 0; right.normalize();
-  const dist = CONFIG.layerSize * 0.3 + CONFIG.objectSize + CONFIG.labelOffset;
+  // Start just past the edge of the layer plane as seen from the camera, then add the gap
+  const edge = CONFIG.layerSize / 2 * (Math.abs(right.x) + Math.abs(right.z));
+  const dist = edge + CONFIG.labelOffset;
   layerLabels.forEach(l => l.position.set(-right.x * dist, l.userData.y + CONFIG.objectSize * 0.6, -right.z * dist));
 }
 
