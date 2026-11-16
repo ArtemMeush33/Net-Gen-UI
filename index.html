@@ -50,8 +50,27 @@
     font-family: var(--font); font-size: var(--fs-base); line-height: var(--lh-base); font-weight: var(--fw-normal);
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: geometricPrecision; }
   #scene { display: block; width: 100vw; height: 100vh; }
-  #title { position: fixed; top: 16px; left: 16px; font-size: var(--fs-sm); line-height: var(--lh-sm);
-    font-weight: var(--fw-medium); letter-spacing: 0.02em; opacity: 0.6; pointer-events: none; }
+
+  /* ===== SIDE PANEL ===== */
+  :root { --panel-width: 240px; --line: rgba(0,0,0,0.12); }
+  #panel { position: fixed; top: 0; left: 0; bottom: 0; width: var(--panel-width); box-sizing: border-box;
+    padding: 24px 20px; background: var(--bg); border-right: 1px solid var(--line); overflow-y: auto; }
+  #panel .title { font-size: var(--fs-sm); line-height: var(--lh-sm); font-weight: var(--fw-semibold);
+    letter-spacing: 0.02em; margin-bottom: 32px; }
+  #panel .section { font-size: var(--fs-xs); line-height: var(--lh-xs); font-weight: var(--fw-medium);
+    letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.5; margin-bottom: 8px; }
+  .layer-row { display: flex; align-items: center; gap: 12px; width: 100%; padding: 8px 0; margin: 0;
+    background: none; border: 0; border-bottom: 1px solid var(--line); color: var(--fg); cursor: pointer;
+    font: inherit; font-size: var(--fs-sm); line-height: var(--lh-sm); text-align: left; }
+  .layer-row .box { flex: none; width: 12px; height: 12px; box-sizing: border-box; border: 1px solid var(--fg);
+    background: var(--fg); transition: background 0.15s; }
+  .layer-row .name { flex: 1; font-weight: var(--fw-medium); transition: opacity 0.15s; }
+  .layer-row .count { font-size: var(--fs-xs); opacity: 0.4; }
+  .layer-row[aria-pressed="false"] .box { background: transparent; }
+  .layer-row[aria-pressed="false"] .name { opacity: 0.35; }
+  .layer-row:hover .name { text-decoration: underline; text-underline-offset: 3px; }
+  .layer-row:focus-visible { outline: 1px solid var(--fg); outline-offset: 2px; }
+  @media (max-width: 600px) { :root { --panel-width: 160px; } #panel { padding: 16px 12px; } }
 </style>
 <script type="importmap">
 { "imports": {
@@ -61,7 +80,11 @@
 </script>
 </head>
 <body>
-<div id="title">New Gen UI</div>
+<aside id="panel">
+  <div class="title">New Gen UI</div>
+  <div class="section">Layers</div>
+  <div id="layer-list"></div>
+</aside>
 <canvas id="scene"></canvas>
 
 <script type="module">
@@ -208,8 +231,12 @@ function textSprite(text, type, align, opacity) {
 
 const nodes = {};
 const layerLabels = [];
+const layerGroups = []; // everything that belongs to one layer, so it can be hidden together
 LAYERS.forEach((layer, li) => {
   const y = li * CONFIG.layerGap;
+  const group = new THREE.Group();
+  scene.add(group);
+  layerGroups.push(group);
 
   const planeGeo = new THREE.PlaneGeometry(CONFIG.layerSize, CONFIG.layerSize);
   planeGeo.rotateX(-Math.PI / 2);
@@ -217,16 +244,16 @@ LAYERS.forEach((layer, li) => {
     color: CONFIG.ink, transparent: true, opacity: CONFIG.layerOpacity, side: THREE.DoubleSide, depthWrite: false
   }));
   plane.position.y = y;
-  scene.add(plane);
+  group.add(plane);
 
   const outline = new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),
     new THREE.LineBasicMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.outlineOpacity }));
   outline.position.y = y;
-  scene.add(outline);
+  group.add(outline);
 
   const label = textSprite(layer.name, CONFIG.layerLabelType, 'right', CONFIG.layerLabelOpacity);
   label.userData.y = y;
-  scene.add(label);
+  group.add(label);
   layerLabels.push(label);
 
   const n = layer.items.length;
@@ -237,18 +264,19 @@ LAYERS.forEach((layer, li) => {
     const pos = new THREE.Vector3(Math.cos(angle) * r, y + CONFIG.objectSize * 0.6, Math.sin(angle) * r);
     const shape = makeShape(layer.shape, planned);
     shape.position.copy(pos);
-    scene.add(shape);
+    group.add(shape);
 
     const tag = textSprite(item.name + (planned ? ' (planned)' : ''), CONFIG.itemLabelType, 'center',
       planned ? CONFIG.itemLabelOpacity * 0.6 : CONFIG.itemLabelOpacity);
     tag.position.copy(pos).add(new THREE.Vector3(0, HALF[layer.shape] + 0.3, 0));
-    scene.add(tag);
+    group.add(tag);
 
-    nodes[item.id] = { pos, half: HALF[layer.shape] };
+    nodes[item.id] = { pos, half: HALF[layer.shape], layer: li };
   });
 });
 
 // Curved links: vertical where they meet each shape, smooth S-curve between
+const linkLines = [];
 LINKS.forEach(([a, b, planned]) => {
   let A = nodes[a], B = nodes[b];
   if (!A || !B) return;
@@ -265,8 +293,39 @@ LINKS.forEach(([a, b, planned]) => {
     : new THREE.LineBasicMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.linkOpacity });
   const line = new THREE.Line(geo, mat);
   if (planned) line.computeLineDistances();
+  line.userData.layers = [A.layer, B.layer];
   scene.add(line);
+  linkLines.push(line);
 });
+
+// ===== LAYER SWITCHER (side panel) =====
+const STORAGE_KEY = 'ngui.hiddenLayers';
+let hidden = new Set();
+try { hidden = new Set(JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]')); } catch (e) {}
+
+function applyVisibility() {
+  LAYERS.forEach((layer, li) => { layerGroups[li].visible = !hidden.has(layer.name); });
+  // A link shows only when both of its ends are visible
+  linkLines.forEach(l => { l.visible = l.userData.layers.every(li => layerGroups[li].visible); });
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify([...hidden])); } catch (e) {}
+}
+
+const list = document.getElementById('layer-list');
+[...LAYERS].reverse().forEach(layer => { // top layer first, same order as in 3D
+  const row = document.createElement('button');
+  row.className = 'layer-row';
+  row.innerHTML = `<span class="box"></span><span class="name"></span><span class="count"></span>`;
+  row.querySelector('.name').textContent = layer.name;
+  row.querySelector('.count').textContent = layer.items.length;
+  row.setAttribute('aria-pressed', String(!hidden.has(layer.name)));
+  row.addEventListener('click', () => {
+    hidden.has(layer.name) ? hidden.delete(layer.name) : hidden.add(layer.name);
+    row.setAttribute('aria-pressed', String(!hidden.has(layer.name)));
+    applyVisibility();
+  });
+  list.appendChild(row);
+});
+applyVisibility();
 
 // Layer titles stay on the screen-left side of the column
 const right = new THREE.Vector3();
@@ -279,11 +338,16 @@ function placeLayerLabels() {
   layerLabels.forEach(l => l.position.set(-right.x * dist, l.userData.y + CONFIG.objectSize * 0.6, -right.z * dist));
 }
 
-addEventListener('resize', () => {
+// Keep the 3D structure centred in the space to the right of the panel
+function fitView() {
+  const panelW = document.getElementById('panel').offsetWidth;
   camera.aspect = innerWidth / innerHeight;
+  camera.setViewOffset(innerWidth, innerHeight, -panelW / 2, 0, innerWidth, innerHeight);
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
-});
+}
+addEventListener('resize', fitView);
+fitView();
 
 function animate() {
   requestAnimationFrame(animate);
