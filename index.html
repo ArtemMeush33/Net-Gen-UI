@@ -31,7 +31,21 @@
     --fw-thin: 100; --fw-light: 300; --fw-normal: 400; --fw-medium: 500;
     --fw-semibold: 600; --fw-bold: 700;
     --fw-black: 700; /* IBM Plex Mono has no 900, so Black uses its heaviest (700) */
+
+    /* Headings: which scale size and weight each level uses */
+    --h1-size: 4xl;  --h1-weight: semibold;
+    --h2-size: 3xl;  --h2-weight: semibold;
+    --h3-size: 2xl;  --h3-weight: semibold;
+    --h4-size: xl;   --h4-weight: semibold;
+    --h5-size: lg;   --h5-weight: medium;
+    --h6-size: base; --h6-weight: medium;
   }
+  h1 { font-size: var(--fs-4xl); line-height: var(--lh-4xl); font-weight: var(--fw-semibold); }
+  h2 { font-size: var(--fs-3xl); line-height: var(--lh-3xl); font-weight: var(--fw-semibold); }
+  h3 { font-size: var(--fs-2xl); line-height: var(--lh-2xl); font-weight: var(--fw-semibold); }
+  h4 { font-size: var(--fs-xl);  line-height: var(--lh-xl);  font-weight: var(--fw-semibold); }
+  h5 { font-size: var(--fs-lg);  line-height: var(--lh-lg);  font-weight: var(--fw-medium); }
+  h6 { font-size: var(--fs-base); line-height: var(--lh-base); font-weight: var(--fw-medium); }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
     font-family: var(--font); font-size: var(--fs-base); line-height: var(--lh-base); font-weight: var(--fw-normal);
     -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: geometricPrecision; }
@@ -72,8 +86,8 @@ const CONFIG = {
   linkCurve: 0.55,       // 0 = straight, higher = longer vertical ends
   linkSegments: 48,      // smoothness of each curve
   labelOffset: 0.2,      // gap between the column and the layer titles
-  // 3D labels use the typography scale above: pick a size (xs..9xl) and a weight
-  layerLabelType: { size: 'xl', weight: 'semibold' }, // layer titles
+  // 3D labels use the typography above: a heading ('h1'..'h6') or { size: 'xs'..'9xl', weight }
+  layerLabelType: 'h3',                                // layer titles
   itemLabelType:  { size: 'sm', weight: 'medium' },   // shape names
   textWorldScale: 0.018, // how big 1px of type is in the 3D scene
   autoRotateSpeed: 0.5   // 0 = no auto rotation
@@ -162,6 +176,7 @@ const css = getComputedStyle(document.documentElement);
 const token = name => css.getPropertyValue(name).trim();
 const FONT = token('--font');
 function typeStyle(t) {
+  if (typeof t === 'string') t = { size: token(`--${t}-size`), weight: token(`--${t}-weight`) };
   return { size: parseFloat(token('--fs-' + t.size)), line: parseFloat(token('--lh-' + t.size)), weight: token('--fw-' + t.weight) };
 }
 // Make sure the font is ready before labels are drawn
