@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>New Gen UI</title>
+<style>
+  :root { --bg: #f7f7f5; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #16171a; --fg: #e8e8e8; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; overflow: hidden; }
+  #scene { display: block; width: 100vw; height: 100vh; }
+  #title { position: fixed; top: 16px; left: 16px; font-size: 14px; font-weight: 600; opacity: 0.6; pointer-events: none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="title">New Gen UI</div>
+<canvas id="scene"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ===== CONFIG: change these values =====
+const CONFIG = {
+  layerGap: 2.4,         // vertical distance between layers
+  layerSize: 6,          // width/depth of each layer plane
+  layerOpacity: 0.12,    // fill of layer planes
+  outlineOpacity: 0.5,   // outline of layer planes
+  shapeOpacity: 0.3,     // faces of the shapes
+  plannedOpacity: 0.35,  // edges of items that are planned, not active yet
+  objectSize: 0.6,       // size of each shape
+  linkColor: 0x888888,
+  linkCurve: 0.55,       // 0 = straight, higher = longer vertical ends
+  linkSegments: 48,      // smoothness of each curve
+  labelOffset: 0.2,      // gap between the column and the layer titles
+  labelScale: 0.9,       // layer title size
+  itemLabelScale: 0.45,  // shape name size
+  autoRotateSpeed: 0.5   // 0 = no auto rotation
+};
+
+// ===== DATA: layers bottom -> top. status: 'active' or 'planned' =====
+const LAYERS = [
+  { name: 'Project', color: 0xa0522d, shape: 'cube', items: [
+    { id: 'docs',  name: 'Docs',         status: 'active' },
+    { id: 'tasks', name: 'Tasks',        status: 'active' },
+    { id: 'diag',  name: 'Diagrams',     status: 'active' },
+    { id: 'ui3d',  name: '3D Interface', status: 'active' }
+  ]},
+  { name: 'People', color: 0x659df2, shape: 'cylinder', items: [
+    { id: 'artem', name: 'Artem', status: 'active' }
+  ]},
+  { name: 'Agents', color: 0xfe9f4d, shape: 'pyramid', items: [
+    { id: 'claude',   name: 'Claude',         status: 'active' },
+    { id: 'docskill', name: 'Doc Skill',      status: 'active' },
+    { id: 'codeskill',name: 'Code Skill',     status: 'active' },
+    { id: 'three',    name: 'Three.js Skill', status: 'active' },
+    { id: 'cowork',   name: 'Cowork',         status: 'planned' }
+  ]},
+  { name: 'Services', color: 0x2dc75c, shape: 'cube', items: [
+    { id: 'notion', name: 'Notion', status: 'active' },
+    { id: 'miro',   name: 'Miro',   status: 'active' },
+    { id: 'github', name: 'GitHub', status: 'active' },
+    { id: 'jira',   name: 'Jira',   status: 'planned' }
+  ]}
+];
+
+// Links by id. Third value true = planned (dashed)
+const LINKS = [
+  ['artem', 'claude'],
+  ['artem', 'ui3d'],
+  ['claude', 'docskill'], ['claude', 'codeskill'], ['claude', 'three'],
+  ['claude', 'notion'], ['claude', 'miro'],
+  ['docskill', 'notion'], ['docskill', 'miro'],
+  ['codeskill', 'github'],
+  ['notion', 'docs'], ['notion', 'tasks'], ['miro', 'diag'],
+  ['github', 'ui3d'], ['three', 'ui3d'],
+  ['cowork', 'notion', true], ['artem', 'cowork', true]
+];
+
+// ===== RENDERING =====
+const canvas = document.getElementById('scene');
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(10, 8, 10);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, CONFIG.layerGap * 1.5, 0);
+controls.enableDamping = true;
+controls.autoRotate = CONFIG.autoRotateSpeed > 0;
+controls.autoRotateSpeed = CONFIG.autoRotateSpeed;
+
+const HALF = {
+  cube: CONFIG.objectSize * 0.5,
+  pyramid: CONFIG.objectSize * 0.6,
+  cylinder: CONFIG.objectSize * 0.65
+};
+
+function makeShape(shape, color, planned) {
+  const s = CONFIG.objectSize;
+  let geo;
+  if (shape === 'cube') geo = new THREE.BoxGeometry(s, s, s);
+  else if (shape === 'pyramid') { geo = new THREE.ConeGeometry(s * 0.75, s * 1.2, 4); geo.rotateY(Math.PI / 4); }
+  else geo = new THREE.CylinderGeometry(s * 0.4, s * 0.4, s * 1.3, 32);
+  const group = new THREE.Group();
+  group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: planned ? CONFIG.shapeOpacity * 0.4 : CONFIG.shapeOpacity,
+    depthWrite: false, side: THREE.DoubleSide
+  })));
+  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 20),
+    new THREE.LineBasicMaterial({ color, transparent: planned, opacity: planned ? CONFIG.plannedOpacity : 1 })));
+  return group;
+}
+
+function textSprite(text, color, scale, align) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const ctx = c.getContext('2d');
+  ctx.font = 'bold 60px system-ui, sans-serif';
+  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, align === 'right' ? 500 : 256, 64);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  sprite.scale.set(scale * 4, scale, 1);
+  sprite.renderOrder = 10;
+  return sprite;
+}
+
+const nodes = {};
+const layerLabels = [];
+LAYERS.forEach((layer, li) => {
+  const y = li * CONFIG.layerGap;
+
+  const planeGeo = new THREE.PlaneGeometry(CONFIG.layerSize, CONFIG.layerSize);
+  planeGeo.rotateX(-Math.PI / 2);
+  const plane = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({
+    color: layer.color, transparent: true, opacity: CONFIG.layerOpacity, side: THREE.DoubleSide, depthWrite: false
+  }));
+  plane.position.y = y;
+  scene.add(plane);
+
+  const outline = new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),
+    new THREE.LineBasicMaterial({ color: layer.color, transparent: true, opacity: CONFIG.outlineOpacity }));
+  outline.position.y = y;
+  scene.add(outline);
+
+  const label = textSprite(layer.name, layer.color, CONFIG.labelScale, 'right');
+  label.userData.y = y;
+  scene.add(label);
+  layerLabels.push(label);
+
+  const n = layer.items.length;
+  layer.items.forEach((item, ii) => {
+    const angle = (ii / n) * Math.PI * 2 + li * 0.6;
+    const r = n === 1 ? 0 : CONFIG.layerSize * 0.3;
+    const planned = item.status === 'planned';
+    const pos = new THREE.Vector3(Math.cos(angle) * r, y + CONFIG.objectSize * 0.6, Math.sin(angle) * r);
+    const shape = makeShape(layer.shape, layer.color, planned);
+    shape.position.copy(pos);
+    scene.add(shape);
+
+    const tag = textSprite(item.name + (planned ? ' (planned)' : ''), layer.color, CONFIG.itemLabelScale, 'center');
+    tag.position.copy(pos).add(new THREE.Vector3(0, HALF[layer.shape] + 0.3, 0));
+    tag.material.opacity = planned ? 0.6 : 1;
+    scene.add(tag);
+
+    nodes[item.id] = { pos, half: HALF[layer.shape] };
+  });
+});
+
+// Curved links: vertical where they meet each shape, smooth S-curve between
+LINKS.forEach(([a, b, planned]) => {
+  let A = nodes[a], B = nodes[b];
+  if (!A || !B) return;
+  if (A.pos.y > B.pos.y) [A, B] = [B, A];
+  const start = A.pos.clone().add(new THREE.Vector3(0, A.half, 0));
+  const end   = B.pos.clone().sub(new THREE.Vector3(0, B.half, 0));
+  const k = (end.y - start.y) * CONFIG.linkCurve;
+  const curve = new THREE.CubicBezierCurve3(
+    start, start.clone().add(new THREE.Vector3(0, k, 0)),
+    end.clone().sub(new THREE.Vector3(0, k, 0)), end);
+  const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(CONFIG.linkSegments));
+  const mat = planned
+    ? new THREE.LineDashedMaterial({ color: CONFIG.linkColor, dashSize: 0.15, gapSize: 0.12 })
+    : new THREE.LineBasicMaterial({ color: CONFIG.linkColor });
+  const line = new THREE.Line(geo, mat);
+  if (planned) line.computeLineDistances();
+  scene.add(line);
+});
+
+// Layer titles stay on the screen-left side of the column
+const right = new THREE.Vector3();
+function placeLayerLabels() {
+  right.setFromMatrixColumn(camera.matrixWorld, 0);
+  right.y = 0; right.normalize();
+  const dist = CONFIG.layerSize * 0.3 + CONFIG.objectSize + CONFIG.labelOffset + CONFIG.labelScale * 2;
+  layerLabels.forEach(l => l.position.set(-right.x * dist, l.userData.y + CONFIG.objectSize * 0.6, -right.z * dist));
+}
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  placeLayerLabels();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>
