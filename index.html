@@ -5,8 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>New Gen UI</title>
 <style>
-  :root { --bg: #f7f7f5; --fg: #1a1a1a; }
-  @media (prefers-color-scheme: dark) { :root { --bg: #16171a; --fg: #e8e8e8; } }
+  :root { --bg: #ffffff; --fg: #000000; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: system-ui, sans-serif; overflow: hidden; }
   #scene { display: block; width: 100vw; height: 100vh; }
   #title { position: fixed; top: 16px; left: 16px; font-size: 14px; font-weight: 600; opacity: 0.6; pointer-events: none; }
@@ -30,12 +29,17 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const CONFIG = {
   layerGap: 2.4,         // vertical distance between layers
   layerSize: 6,          // width/depth of each layer plane
-  layerOpacity: 0.12,    // fill of layer planes
-  outlineOpacity: 0.5,   // outline of layer planes
-  shapeOpacity: 0.3,     // faces of the shapes
-  plannedOpacity: 0.35,  // edges of items that are planned, not active yet
+  // Only two colours: white background, black ink. Everything else is transparency (0 = invisible, 1 = solid black).
+  ink: 0x000000,         // the one colour for all interface elements
+  layerOpacity: 0.03,    // fill of layer planes
+  outlineOpacity: 0.35,  // outline of layer planes
+  shapeOpacity: 0.08,    // faces of the shapes
+  edgeOpacity: 1,        // edges of active shapes
+  plannedOpacity: 0.3,   // edges of items that are planned, not active yet
+  linkOpacity: 0.35,     // connections between items
+  layerLabelOpacity: 0.85, // layer titles
+  itemLabelOpacity: 0.7,   // shape names
   objectSize: 0.6,       // size of each shape
-  linkColor: 0x888888,
   linkCurve: 0.55,       // 0 = straight, higher = longer vertical ends
   linkSegments: 48,      // smoothness of each curve
   labelOffset: 0.2,      // gap between the column and the layer titles
@@ -46,23 +50,23 @@ const CONFIG = {
 
 // ===== DATA: layers bottom -> top. status: 'active' or 'planned' =====
 const LAYERS = [
-  { name: 'Project', color: 0xa0522d, shape: 'cube', items: [
+  { name: 'Project', shape: 'cube', items: [
     { id: 'docs',  name: 'Docs',         status: 'active' },
     { id: 'tasks', name: 'Tasks',        status: 'active' },
     { id: 'diag',  name: 'Diagrams',     status: 'active' },
     { id: 'ui3d',  name: '3D Interface', status: 'active' }
   ]},
-  { name: 'People', color: 0x659df2, shape: 'cylinder', items: [
+  { name: 'People', shape: 'cylinder', items: [
     { id: 'artem', name: 'Artem', status: 'active' }
   ]},
-  { name: 'Agents', color: 0xfe9f4d, shape: 'pyramid', items: [
+  { name: 'Agents', shape: 'pyramid', items: [
     { id: 'claude',   name: 'Claude',         status: 'active' },
     { id: 'docskill', name: 'Doc Skill',      status: 'active' },
     { id: 'codeskill',name: 'Code Skill',     status: 'active' },
     { id: 'three',    name: 'Three.js Skill', status: 'active' },
     { id: 'cowork',   name: 'Cowork',         status: 'planned' }
   ]},
-  { name: 'Services', color: 0x2dc75c, shape: 'cube', items: [
+  { name: 'Services', shape: 'cube', items: [
     { id: 'notion', name: 'Notion', status: 'active' },
     { id: 'miro',   name: 'Miro',   status: 'active' },
     { id: 'github', name: 'GitHub', status: 'active' },
@@ -88,7 +92,8 @@ const canvas = document.getElementById('scene');
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 100);
 camera.position.set(10, 8, 10);
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setClearColor(0xffffff, 1);
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 
@@ -104,7 +109,8 @@ const HALF = {
   cylinder: CONFIG.objectSize * 0.65
 };
 
-function makeShape(shape, color, planned) {
+function makeShape(shape, planned) {
+  const color = CONFIG.ink;
   const s = CONFIG.objectSize;
   let geo;
   if (shape === 'cube') geo = new THREE.BoxGeometry(s, s, s);
@@ -116,22 +122,22 @@ function makeShape(shape, color, planned) {
     depthWrite: false, side: THREE.DoubleSide
   })));
   group.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 20),
-    new THREE.LineBasicMaterial({ color, transparent: planned, opacity: planned ? CONFIG.plannedOpacity : 1 })));
+    new THREE.LineBasicMaterial({ color, transparent: true, opacity: planned ? CONFIG.plannedOpacity : CONFIG.edgeOpacity })));
   return group;
 }
 
-function textSprite(text, color, scale, align) {
+function textSprite(text, scale, align, opacity) {
   const c = document.createElement('canvas');
   c.width = 512; c.height = 128;
   const ctx = c.getContext('2d');
   ctx.font = 'bold 60px system-ui, sans-serif';
-  ctx.fillStyle = '#' + color.toString(16).padStart(6, '0');
+  ctx.fillStyle = '#000000';
   ctx.textAlign = align;
   ctx.textBaseline = 'middle';
   ctx.fillText(text, align === 'right' ? 500 : 256, 64);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, opacity, depthTest: false }));
   sprite.scale.set(scale * 4, scale, 1);
   sprite.renderOrder = 10;
   return sprite;
@@ -145,17 +151,17 @@ LAYERS.forEach((layer, li) => {
   const planeGeo = new THREE.PlaneGeometry(CONFIG.layerSize, CONFIG.layerSize);
   planeGeo.rotateX(-Math.PI / 2);
   const plane = new THREE.Mesh(planeGeo, new THREE.MeshBasicMaterial({
-    color: layer.color, transparent: true, opacity: CONFIG.layerOpacity, side: THREE.DoubleSide, depthWrite: false
+    color: CONFIG.ink, transparent: true, opacity: CONFIG.layerOpacity, side: THREE.DoubleSide, depthWrite: false
   }));
   plane.position.y = y;
   scene.add(plane);
 
   const outline = new THREE.LineSegments(new THREE.EdgesGeometry(planeGeo),
-    new THREE.LineBasicMaterial({ color: layer.color, transparent: true, opacity: CONFIG.outlineOpacity }));
+    new THREE.LineBasicMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.outlineOpacity }));
   outline.position.y = y;
   scene.add(outline);
 
-  const label = textSprite(layer.name, layer.color, CONFIG.labelScale, 'right');
+  const label = textSprite(layer.name, CONFIG.labelScale, 'right', CONFIG.layerLabelOpacity);
   label.userData.y = y;
   scene.add(label);
   layerLabels.push(label);
@@ -166,13 +172,13 @@ LAYERS.forEach((layer, li) => {
     const r = n === 1 ? 0 : CONFIG.layerSize * 0.3;
     const planned = item.status === 'planned';
     const pos = new THREE.Vector3(Math.cos(angle) * r, y + CONFIG.objectSize * 0.6, Math.sin(angle) * r);
-    const shape = makeShape(layer.shape, layer.color, planned);
+    const shape = makeShape(layer.shape, planned);
     shape.position.copy(pos);
     scene.add(shape);
 
-    const tag = textSprite(item.name + (planned ? ' (planned)' : ''), layer.color, CONFIG.itemLabelScale, 'center');
+    const tag = textSprite(item.name + (planned ? ' (planned)' : ''), CONFIG.itemLabelScale, 'center',
+      planned ? CONFIG.itemLabelOpacity * 0.6 : CONFIG.itemLabelOpacity);
     tag.position.copy(pos).add(new THREE.Vector3(0, HALF[layer.shape] + 0.3, 0));
-    tag.material.opacity = planned ? 0.6 : 1;
     scene.add(tag);
 
     nodes[item.id] = { pos, half: HALF[layer.shape] };
@@ -192,8 +198,8 @@ LINKS.forEach(([a, b, planned]) => {
     end.clone().sub(new THREE.Vector3(0, k, 0)), end);
   const geo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(CONFIG.linkSegments));
   const mat = planned
-    ? new THREE.LineDashedMaterial({ color: CONFIG.linkColor, dashSize: 0.15, gapSize: 0.12 })
-    : new THREE.LineBasicMaterial({ color: CONFIG.linkColor });
+    ? new THREE.LineDashedMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.linkOpacity, dashSize: 0.15, gapSize: 0.12 })
+    : new THREE.LineBasicMaterial({ color: CONFIG.ink, transparent: true, opacity: CONFIG.linkOpacity });
   const line = new THREE.Line(geo, mat);
   if (planned) line.computeLineDistances();
   scene.add(line);
